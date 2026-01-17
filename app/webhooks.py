@@ -340,6 +340,13 @@ async def process_issue_background(data: dict[str, Any]) -> None:
         logger.error(f"Sandbox execution failed: {e}")
 
 
+@router.get("/issue")
+async def debug_issue_webhook():
+    """Debug endpoint - log what headers are being received."""
+    logger.warning("DEBUG: GET request received - this should be a POST!")
+    return {"message": "This endpoint only accepts POST"}
+
+
 @router.post("/issue")
 async def handle_issue_webhook(
     background_tasks: BackgroundTasks,
