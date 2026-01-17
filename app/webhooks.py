@@ -22,8 +22,18 @@ async def verify_forgejo_signature(request: Request) -> bytes:
     Returns the raw request body if valid.
     Raises HTTPException if signature is missing or invalid.
     """
+    logger.info(f"Received {request.method} request to {request.url.path}")
+    logger.debug(f"Headers: {dict(request.headers)}")
+
     payload = await request.body()
     signature = request.headers.get("X-Hub-Signature-256", "")
+
+    logger.debug(
+        f"Webhook signature header: {signature[:20]}..."
+        if len(signature) > 20
+        else f"Webhook signature header: {signature}"
+    )
+    logger.debug(f"Webhook secret configured: {bool(settings.forgejo_webhook_secret)}")
 
     if not signature:
         raise HTTPException(status_code=401, detail="Missing signature")
@@ -32,6 +42,11 @@ async def verify_forgejo_signature(request: Request) -> bytes:
         expected = hmac.new(
             settings.forgejo_webhook_secret.encode(), payload, hashlib.sha256
         ).hexdigest()
+        logger.debug(
+            f"Computed expected: sha256={expected[:20]}..."
+            if len(expected) > 20
+            else f"Computed expected: sha256={expected}"
+        )
         if not hmac.compare_digest(f"sha256={expected}", signature):
             raise HTTPException(status_code=401, detail="Invalid signature")
 
