@@ -36,17 +36,13 @@ class Settings(BaseSettings):
     )
 
     # OpenCode configuration
-    opencode_zen_api_key: str = Field(
-        default="",
-        description="OpenCode Zen API key for authentication",
-    )
-    opencode_provider: str = Field(
-        default="zen",
-        description="OpenCode provider to use (zen, anthropic, openai, etc.)",
-    )
     opencode_model: str = Field(
+        default="anthropic/claude-sonnet-4-5",
+        description="OpenCode model to use (e.g., anthropic/claude-sonnet-4-5)",
+    )
+    anthropic_api_key: str = Field(
         default="",
-        description="OpenCode model to use (if provider-specific)",
+        description="Anthropic API key for OpenCode (passed through to LiteLLM proxy)",
     )
 
     # LiteLLM + Phoenix configuration

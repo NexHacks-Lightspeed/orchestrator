@@ -86,18 +86,25 @@ def _get_sandbox_env() -> dict[str, str | None]:
     """Get environment variables for the sandbox."""
 
     ret = {
-        "OPENCODE_PROVIDER": settings.opencode_provider,
-        "OPENCODE_MODEL": settings.opencode_model,
         "OPENCODE_LOG_LEVEL": "info",
         "PHOENIX_ENABLED": "true" if settings.enable_phoenix else "false",
     }
-    
+
     if settings.litellm_proxy_url:
+        # Configure anthropic provider with LiteLLM proxy as baseURL
         opencode_config = {
             "$schema": "https://opencode.ai/config.json",
-            "provider": {"anthropic": {"options": {"baseURL": f"{settings.litellm_proxy_url}/v1"}}},
+            "provider": {
+                "anthropic": {
+                    "options": {
+                        "baseURL": f"{settings.litellm_proxy_url}/v1",
+                        "apiKey": settings.anthropic_api_key,
+                    }
+                }
+            },
+            "model": settings.opencode_model,
         }
-        logger.info(f"OpenCode config for sandbox: {opencode_config}")        
+        logger.info(f"OpenCode config for sandbox: {opencode_config}")
         ret["OPENCODE_CONFIG_CONTENT"] = json.dumps(opencode_config)
 
     logger.info(f"Sandbox environment variables: {ret}")
@@ -124,22 +131,14 @@ def _sandbox_context(timeout: int = 600):
 
 
 def _setup_opencode(sandbox: modal.Sandbox) -> bool:
-    """Setup OpenCode authentication and configuration in the sandbox."""
-    logger.info("Setting up OpenCode authentication")
-
-    if settings.opencode_zen_api_key:
-        setup_cmd = f"echo {settings.opencode_zen_api_key} | opencode connect zen"
-        if not _exec_or_fail(sandbox, "bash", "-c", setup_cmd, timeout=30):
-            logger.error("OpenCode Zen authentication failed")
-            return False
-        logger.info("OpenCode Zen authentication successful")
-    else:
-        logger.warning("No OpenCode Zen API key provided, using unauthenticated mode")
+    """Verify OpenCode is installed and ready."""
+    logger.info("Verifying OpenCode installation")
 
     if not _exec_or_fail(sandbox, "opencode", "--version", timeout=15):
         logger.error("OpenCode verification failed")
         return False
 
+    logger.info("OpenCode is ready")
     return True
 
 
@@ -177,7 +176,7 @@ Focus on making minimal, targeted changes that directly address the issue."""
     log_proc.wait()
     log_output = log_proc.stdout.read()
     if log_output:
-        logger.info(f"[OpenCode output] {log_output[:5000]}")
+        logger.info(f"[OpenCode output] {log_output[:20000]}")
 
     if p.returncode != 0:
         logger.error(f"OpenCode failed with exit code {p.returncode}")
