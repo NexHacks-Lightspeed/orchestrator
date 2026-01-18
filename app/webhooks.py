@@ -122,7 +122,7 @@ def _setup_opencode(sandbox: modal.Sandbox) -> bool:
     logger.info("Setting up OpenCode configuration")
 
     # Verify opencode-lens is executable
-    if not _exec_or_fail(sandbox, "opencode-lens", "--help", timeout=15):
+    if not _exec_or_fail(sandbox, "/usr/local/bin/opencode-lens", "--help", timeout=15):
         logger.error("OpenCode Lens verification failed")
         return False
 
