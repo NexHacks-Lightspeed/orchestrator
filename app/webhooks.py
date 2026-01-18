@@ -83,8 +83,8 @@ def _build_opencode_image() -> modal.Image:
         .run_commands("bun install -g opencode-ai")
         .add_local_file(f"{repo_root}/opencode-lens", "/usr/local/bin/opencode-lens", copy=True)
         .run_commands("chmod +x /usr/local/bin/opencode-lens")
-        .run_commands("mkdir -p /repo")
-        .add_local_file(f"{repo_root}/opencode.json", "/repo/opencode.json", copy=True)
+        .run_commands("mkdir -p /staging")
+        .add_local_file(f"{repo_root}/opencode.json", "/staging/opencode.json", copy=True)
     )
 
 
@@ -248,6 +248,13 @@ def _run_git_workflow(
 
     if not _setup_opencode(sandbox):
         logger.error("OpenCode setup failed, aborting workflow")
+        return
+
+    logger.info("Copying OpenCode configuration to working directory")
+    if not _exec_or_fail(
+        sandbox, "bash", "-c", "cp /staging/opencode.json /repo/opencode.json", timeout=10
+    ):
+        logger.error("Failed to copy OpenCode configuration")
         return
 
     analysis = _run_opencode(sandbox, issue_data)
