@@ -84,21 +84,24 @@ def _build_opencode_image() -> modal.Image:
 
 def _get_sandbox_env() -> dict[str, str | None]:
     """Get environment variables for the sandbox."""
-    opencode_config = {}
 
+    ret = {
+        "OPENCODE_PROVIDER": settings.opencode_provider,
+        "OPENCODE_MODEL": settings.opencode_model,
+        "OPENCODE_LOG_LEVEL": "info",
+        "PHOENIX_ENABLED": "true" if settings.enable_phoenix else "false",
+    }
+    
     if settings.litellm_proxy_url:
         opencode_config = {
             "$schema": "https://opencode.ai/config.json",
             "provider": {"anthropic": {"options": {"baseURL": f"{settings.litellm_proxy_url}/v1"}}},
         }
+        logger.info(f"OpenCode config for sandbox: {opencode_config}")        
+        ret["OPENCODE_CONFIG_CONTENT"] = json.dumps(opencode_config)
 
-    return {
-        "OPENCODE_PROVIDER": settings.opencode_provider,
-        "OPENCODE_MODEL": settings.opencode_model,
-        "OPENCODE_LOG_LEVEL": "info",
-        "OPENCODE_CONFIG_CONTENT": json.dumps(opencode_config) if opencode_config else None,
-        "PHOENIX_ENABLED": "true" if settings.enable_phoenix else "false",
-    }
+    logger.info(f"Sandbox environment variables: {ret}")
+    return ret
 
 
 @contextmanager
