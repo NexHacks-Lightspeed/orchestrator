@@ -83,10 +83,8 @@ def _build_opencode_image() -> modal.Image:
         .run_commands("bun install -g opencode-ai")
         .add_local_file(f"{repo_root}/opencode-lens", "/usr/local/bin/opencode-lens", copy=True)
         .run_commands("chmod +x /usr/local/bin/opencode-lens")
-        .run_commands("mkdir -p /root/.config/opencode")
-        .add_local_file(
-            f"{repo_root}/opencode-sandbox.json", "/root/.config/opencode/opencode.json", copy=True
-        )
+        .run_commands("mkdir -p /repo")
+        .add_local_file(f"{repo_root}/opencode-sandbox.json", "/repo/opencode.json", copy=True)
     )
 
 
