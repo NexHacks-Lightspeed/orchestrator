@@ -1,4 +1,7 @@
+import os
+import subprocess
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +17,23 @@ async def lifespan(app: FastAPI):
     if not settings.forgejo_api_token:
         logger.critical("FORGEJO_API_TOKEN is not configured - orchestrator cannot push to Forgejo")
         raise SystemExit(1)
+
+    repo_root = Path(__file__).parent.parent
+    template_path = repo_root / "opencode-sandbox.json.template"
+    output_path = repo_root / "opencode-sandbox.json"
+
+    if template_path.exists() and not output_path.exists():
+        if settings.litellm_proxy_url:
+            logger.info("Generating opencode-sandbox.json from template")
+            subprocess.run(
+                [
+                    "sed",
+                    f"s|<LITELLM_PROXY_URL>|{settings.litellm_proxy_url}|g",
+                    str(template_path),
+                ],
+                stdout=open(output_path, "w"),
+            )
+
     yield
     logger.info("Shutting down Lightspeed Orchestrator")
 
