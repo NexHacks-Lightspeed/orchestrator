@@ -93,6 +93,7 @@ def _get_sandbox_env() -> dict[str, str | None]:
     return {
         "OPENCODE_LOG_LEVEL": "info",
         "OPENCODE_LENS_PROXY_URL": settings.litellm_proxy_url,
+        "OPENCODE_CONFIG": "/staging/opencode.json",
     }
 
 
@@ -151,7 +152,6 @@ Instructions:
 1. First, analyze the issue and write your analysis and implementation plan to .photon/analysis.md
 2. Then implement the fix by editing the necessary files
 3. Do NOT delete .photon/analysis.md - it will be used for the PR description
-4. NEVER add or commit opencode.json - it is a temporary configuration file
 
 Focus on making minimal, targeted changes that directly address the issue."""
 
@@ -249,13 +249,6 @@ def _run_git_workflow(
         logger.error("Git branch creation failed, aborting workflow")
         return
 
-    logger.info("Copying OpenCode configuration to working directory")
-    if not _exec_or_fail(
-        sandbox, "bash", "-c", "cp /staging/opencode.json /repo/opencode.json", timeout=10
-    ):
-        logger.error("Failed to copy OpenCode configuration")
-        return
-
     if not _setup_opencode(sandbox):
         logger.error("OpenCode setup failed, aborting workflow")
         return
@@ -266,7 +259,7 @@ def _run_git_workflow(
         return
 
     logger.info("Staging changes")
-    stage_cmd = "cd repo && git add -A && git reset .photon/ opencode.json 2>/dev/null || true"
+    stage_cmd = "cd repo && git add -A && git reset .photon/ 2>/dev/null || true"
     if not _exec_or_fail(sandbox, "bash", "-c", stage_cmd, timeout=10):
         logger.error("Git staging failed, aborting workflow")
         return
