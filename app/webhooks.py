@@ -240,7 +240,8 @@ def _run_git_workflow(
     branch_name = f"photon/issue_{issue_number}"
 
     logger.info(f"Cloning repository: {repo_url}")
-    if not _exec_or_fail(sandbox, "git", "clone", "--depth", "1", repo_url, "repo", timeout=60):
+    # Clone full history to provide git log context for the agent
+    if not _exec_or_fail(sandbox, "git", "clone", repo_url, "repo", timeout=120):
         logger.error("Git clone failed, aborting workflow")
         return
 
