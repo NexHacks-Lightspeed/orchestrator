@@ -69,7 +69,7 @@ def _exec_or_fail(sandbox: modal.Sandbox, *args: str, timeout: int = 30) -> bool
 
 
 def _build_opencode_image() -> modal.Image:
-    """Build Modal image with git, node, bun, opencode-ai, and opencode-lens installed."""
+    """Build Modal image with git, node, bun, and opencode-ai installed."""
     repo_root = Path(__file__).parent.parent
     return (
         modal.Image.debian_slim()
@@ -81,8 +81,6 @@ def _build_opencode_image() -> modal.Image:
             {"PATH": "/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
         )
         .run_commands("bun install -g opencode-ai")
-        .add_local_file(f"{repo_root}/opencode-lens", "/usr/local/bin/opencode-lens", copy=True)
-        .run_commands("chmod +x /usr/local/bin/opencode-lens")
         .run_commands("mkdir -p /staging")
         .add_local_file(f"{repo_root}/opencode.json", "/staging/opencode.json", copy=True)
     )
@@ -92,7 +90,6 @@ def _get_sandbox_env() -> dict[str, str | None]:
     """Get environment variables for the sandbox."""
     return {
         "OPENCODE_LOG_LEVEL": "info",
-        "OPENCODE_LENS_PROXY_URL": settings.litellm_proxy_url,
         "OPENCODE_CONFIG": "/staging/opencode.json",
     }
 
@@ -117,22 +114,14 @@ def _sandbox_context(timeout: int = 600):
 
 
 def _setup_opencode(sandbox: modal.Sandbox) -> bool:
-    """Setup OpenCode and OpenCode Lens in the sandbox."""
-    logger.info("Setting up OpenCode configuration")
+    """Verify OpenCode is installed and ready."""
+    logger.info("Verifying OpenCode installation")
 
-    # Verify opencode-lens exists and is executable (don't run it yet - needs opencode.json in place)
-    if not _exec_or_fail(sandbox, "test", "-x", "/usr/local/bin/opencode-lens", timeout=15):
-        logger.error("OpenCode Lens verification failed - file not found or not executable")
-        return False
-
-    logger.info("OpenCode Lens is ready")
-
-    # Verify opencode is installed
     if not _exec_or_fail(sandbox, "opencode", "--version", timeout=15):
         logger.error("OpenCode verification failed")
         return False
 
-    logger.info("OpenCode configuration complete")
+    logger.info("OpenCode is ready")
     return True
 
 
@@ -158,14 +147,23 @@ Focus on making minimal, targeted changes that directly address the issue."""
     logger.info(f"Running OpenCode for issue #{issue_number}")
 
     escaped_prompt = prompt.replace("'", "'\\''")
-    cmd = f"cd /repo && opencode-lens run --print-logs --log-level DEBUG '{escaped_prompt}'"
+    cmd = (
+        f"cd /repo && script -q -c "
+        f"\"opencode run --print-logs --log-level DEBUG '{escaped_prompt}'\" "
+        f"/tmp/opencode.log"
+    )
     p = sandbox.exec("bash", "-c", cmd, timeout=300)
     p.wait()
 
+    # Log OpenCode output for debugging
+    log_proc = sandbox.exec("cat", "/tmp/opencode.log", timeout=10)
+    log_proc.wait()
+    log_output = log_proc.stdout.read()
+    if log_output:
+        logger.info(f"[OpenCode output] {log_output[:5000]}")
+
     if p.returncode != 0:
         logger.error(f"OpenCode failed with exit code {p.returncode}")
-        logger.error(f"stdout: {p.stdout.read()}")
-        logger.error(f"stderr: {p.stderr.read()}")
         return None
 
     logger.info("OpenCode completed successfully")
