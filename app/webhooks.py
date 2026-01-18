@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import re
 from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -9,8 +10,20 @@ import httpx
 import modal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
+from app.forgejo_client import (
+    get_all_review_comments,
+    get_issue_comments,
+    get_issue_details,
+    get_pr_comments,
+    get_pr_reviews,
+    post_pr_comment,
+)
 from app.logging import logger
 from app.settings import settings
+
+# Constants
+PHOTON_BOT_USERNAME = "Photon"
+SANDBOX_TIMEOUT_SECONDS = 600  # 10 minutes
 
 router = APIRouter()
 
@@ -92,7 +105,7 @@ def _get_sandbox_env() -> dict[str, str | None]:
 
 
 @contextmanager
-def _sandbox_context(timeout: int = 600):
+def _sandbox_context(timeout: int = SANDBOX_TIMEOUT_SECONDS):
     """Context manager for Modal sandbox lifecycle."""
     app = modal.App.lookup(settings.modal_app_name, create_if_missing=True)
     sb = modal.Sandbox.create(
@@ -339,6 +352,531 @@ async def process_issue_background(data: dict[str, Any]) -> None:
             )
     except Exception as e:
         logger.error(f"Sandbox execution failed: {e}")
+
+
+# =============================================================================
+# Review Iterate Endpoint - For iterating on PRs based on reviewer feedback
+# =============================================================================
+
+
+def _extract_issue_number(pr_body: str, branch_name: str) -> int | None:
+    """
+    Extract the linked issue number from PR body or branch name.
+
+    Tries multiple patterns:
+    1. "Automated PR for issue #X" in PR body
+    2. "photon/issue_X" in branch name
+
+    Args:
+        pr_body: The pull request body/description
+        branch_name: The PR head branch name
+
+    Returns:
+        Issue number if found, None otherwise
+    """
+    # Try PR body pattern: "Automated PR for issue #X" or "issue #X"
+    body_match = re.search(r"issue\s*#(\d+)", pr_body, re.IGNORECASE)
+    if body_match:
+        return int(body_match.group(1))
+
+    # Try branch name pattern: "photon/issue_X"
+    branch_match = re.search(r"photon/issue_(\d+)", branch_name, re.IGNORECASE)
+    if branch_match:
+        return int(branch_match.group(1))
+
+    return None
+
+
+def _format_comments_for_prompt(comments: list[dict], label: str) -> str:
+    """
+    Format a list of comments into a readable string for the agent prompt.
+
+    Args:
+        comments: List of comment objects with 'user', 'body', 'created_at'
+        label: Label to describe this section (e.g., "PR Comments")
+
+    Returns:
+        Formatted string with all comments
+    """
+    if not comments:
+        return f"## {label}\nNo comments.\n"
+
+    lines = [f"## {label}"]
+    for comment in comments:
+        user = comment.get("user", {}).get("login", "unknown")
+        body = comment.get("body", "").strip()
+        created = comment.get("created_at", "unknown time")
+        lines.append(f"\n### @{user} ({created}):\n{body}")
+
+    return "\n".join(lines)
+
+
+def _format_reviews_for_prompt(reviews: list[dict]) -> str:
+    """
+    Format PR reviews into a readable string for the agent prompt.
+
+    Args:
+        reviews: List of review objects with 'user', 'state', 'body'
+
+    Returns:
+        Formatted string with all reviews
+    """
+    if not reviews:
+        return "## PR Reviews\nNo reviews yet.\n"
+
+    lines = ["## PR Reviews"]
+    for review in reviews:
+        user = review.get("user", {}).get("login", "unknown")
+        state = review.get("state", "unknown")
+        body = review.get("body", "").strip()
+        lines.append(f"\n### @{user} - {state.upper()}:")
+        if body:
+            lines.append(body)
+
+    return "\n".join(lines)
+
+
+def _format_review_comments_for_prompt(comments: list[dict]) -> str:
+    """
+    Format line-specific review comments for the agent prompt.
+
+    Args:
+        comments: List of review comment objects with file/line context
+
+    Returns:
+        Formatted string with all review comments
+    """
+    if not comments:
+        return "## Line-Specific Review Comments\nNo line comments.\n"
+
+    lines = ["## Line-Specific Review Comments"]
+    for comment in comments:
+        user = comment.get("_review_user", comment.get("user", {}).get("login", "unknown"))
+        path = comment.get("path", "unknown file")
+        line = comment.get("line", comment.get("old_line", "?"))
+        body = comment.get("body", "").strip()
+        lines.append(f"\n### {path}:{line} (@{user}):")
+        lines.append(body)
+
+    return "\n".join(lines)
+
+
+def _build_authenticated_remote_url(repo_url: str) -> str:
+    """
+    Build an authenticated git remote URL using the Forgejo API token.
+
+    Args:
+        repo_url: The original clone URL
+
+    Returns:
+        URL with embedded authentication token
+    """
+    parsed = urlparse(repo_url)
+    return urlunparse(
+        parsed._replace(
+            scheme="https",
+            netloc=f"x-token:{settings.forgejo_api_token}@{parsed.netloc}",
+        )
+    )
+
+
+def _run_opencode_iterate(
+    sandbox: modal.Sandbox,
+    prompt: str,
+    branch_name: str,
+) -> bool:
+    """
+    Run OpenCode with a prompt for iterating on an existing PR.
+
+    The prompt instructs the agent to make incremental commits as it works,
+    providing liveness to reviewers watching the PR.
+
+    Args:
+        sandbox: The Modal sandbox instance
+        prompt: The full context prompt for the agent
+        branch_name: The PR branch name (for commit/push)
+
+    Returns:
+        True if OpenCode completed successfully, False otherwise
+    """
+    logger.info(f"Running OpenCode iteration for branch {branch_name}")
+
+    escaped_prompt = prompt.replace("'", "'\\''")
+    cmd = (
+        f"cd /repo && script -q -c "
+        f"\"opencode run --print-logs --log-level DEBUG '{escaped_prompt}'\" "
+        f"/tmp/opencode.log"
+    )
+    p = sandbox.exec("bash", "-c", cmd, timeout=SANDBOX_TIMEOUT_SECONDS - 60)
+    p.wait()
+
+    # Read and log output
+    log_proc = sandbox.exec("cat", "/tmp/opencode.log", timeout=10)
+    log_proc.wait()
+    log_output = log_proc.stdout.read()
+    if log_output:
+        logger.info(f"[OpenCode iteration output] {log_output[:5000]}")
+
+    if p.returncode != 0:
+        logger.error(f"OpenCode iteration failed with exit code {p.returncode}")
+        return False
+
+    logger.info("OpenCode iteration completed successfully")
+    return True
+
+
+def _run_git_workflow_iterate(
+    sandbox: modal.Sandbox,
+    repo_url: str,
+    branch_name: str,
+    prompt: str,
+) -> bool:
+    """
+    Run the git workflow for iterating on an existing PR branch.
+
+    Unlike the initial workflow, this:
+    - Clones full history for git log context
+    - Checks out the existing branch (doesn't create new)
+    - Configures git remote with push access for incremental commits
+    - Agent is responsible for committing and pushing as it works
+
+    Args:
+        sandbox: The Modal sandbox instance
+        repo_url: Repository clone URL
+        branch_name: The existing PR branch to check out
+        prompt: The full context prompt for the agent
+
+    Returns:
+        True if workflow completed successfully, False otherwise
+    """
+    logger.info(f"Starting git workflow iteration for branch: {branch_name}")
+
+    # Clone full history for git log context
+    logger.info(f"Cloning repository: {repo_url}")
+    if not _exec_or_fail(sandbox, "git", "clone", repo_url, "repo", timeout=120):
+        logger.error("Git clone failed, aborting iteration workflow")
+        return False
+
+    # Checkout existing branch
+    logger.info(f"Checking out existing branch: {branch_name}")
+    checkout_cmd = f"cd repo && git checkout {branch_name}"
+    if not _exec_or_fail(sandbox, "bash", "-c", checkout_cmd, timeout=30):
+        logger.error(f"Failed to checkout branch {branch_name}, aborting")
+        return False
+
+    # Configure git user for commits
+    git_config_cmd = (
+        "cd repo && git config user.email 'photon@lightspeed' && git config user.name 'Photon'"
+    )
+    if not _exec_or_fail(sandbox, "bash", "-c", git_config_cmd, timeout=10):
+        logger.error("Git config failed, aborting")
+        return False
+
+    # Configure authenticated remote for push access
+    auth_url = _build_authenticated_remote_url(repo_url)
+    remote_cmd = f"cd repo && git remote set-url origin {auth_url}"
+    if not _exec_or_fail(sandbox, "bash", "-c", remote_cmd, timeout=10):
+        logger.error("Failed to configure authenticated remote, aborting")
+        return False
+
+    # Setup OpenCode
+    if not _setup_opencode(sandbox):
+        logger.error("OpenCode setup failed, aborting iteration workflow")
+        return False
+
+    # Run OpenCode with iteration prompt
+    if not _run_opencode_iterate(sandbox, prompt, branch_name):
+        logger.error("OpenCode iteration failed")
+        return False
+
+    logger.info("Git workflow iteration completed successfully")
+    return True
+
+
+async def _gather_review_context(
+    repo_api_url: str,
+    pr_number: int,
+    pr_body: str,
+    branch_name: str,
+) -> dict[str, Any]:
+    """
+    Gather all context needed for iterating on a PR.
+
+    Fetches from Forgejo API:
+    - PR comments (general discussion)
+    - PR reviews and their line-specific comments
+    - Linked issue details and comments (if found)
+
+    Args:
+        repo_api_url: Base API URL for the repo
+        pr_number: The pull request number
+        pr_body: The PR body/description
+        branch_name: The PR branch name
+
+    Returns:
+        Dict with all gathered context
+    """
+    context: dict[str, Any] = {
+        "pr_comments": [],
+        "pr_reviews": [],
+        "review_comments": [],
+        "issue_number": None,
+        "issue_details": None,
+        "issue_comments": [],
+    }
+
+    # Fetch PR-level context
+    context["pr_comments"] = await get_pr_comments(repo_api_url, pr_number)
+    context["pr_reviews"] = await get_pr_reviews(repo_api_url, pr_number)
+    context["review_comments"] = await get_all_review_comments(repo_api_url, pr_number)
+
+    # Try to find and fetch linked issue
+    issue_number = _extract_issue_number(pr_body, branch_name)
+    if issue_number:
+        context["issue_number"] = issue_number
+        context["issue_details"] = await get_issue_details(repo_api_url, issue_number)
+        context["issue_comments"] = await get_issue_comments(repo_api_url, issue_number)
+        logger.info(f"Found linked issue #{issue_number}")
+    else:
+        logger.info("No linked issue number found in PR body or branch name")
+
+    return context
+
+
+def _build_iteration_prompt(
+    pr_data: dict,
+    context: dict[str, Any],
+    branch_name: str,
+) -> str:
+    """
+    Build the full prompt for the OpenCode agent to iterate on a PR.
+
+    Includes:
+    - Original issue context (if available)
+    - PR discussion and review feedback
+    - Instructions for incremental commits
+
+    Args:
+        pr_data: The pull request data from the webhook
+        context: Gathered context from Forgejo API
+        branch_name: The PR branch name
+
+    Returns:
+        Complete prompt string for the agent
+    """
+    pr_title = pr_data.get("title", "")
+    pr_body = pr_data.get("body", "")
+
+    # Build issue context section
+    issue_section = ""
+    if context["issue_details"]:
+        issue = context["issue_details"]
+        issue_section = f"""
+## Original Issue
+Issue #{context["issue_number"]}: {issue.get("title", "")}
+
+{issue.get("body", "")}
+
+{_format_comments_for_prompt(context["issue_comments"], "Issue Discussion")}
+"""
+    else:
+        issue_section = """
+## Original Issue
+No linked issue found. Please infer the original requirements from the PR description,
+existing commits, and the git log history.
+"""
+
+    # Format PR feedback sections
+    pr_comments_section = _format_comments_for_prompt(context["pr_comments"], "PR Discussion")
+    reviews_section = _format_reviews_for_prompt(context["pr_reviews"])
+    review_comments_section = _format_review_comments_for_prompt(context["review_comments"])
+
+    prompt = f"""You are iterating on an existing pull request based on reviewer feedback.
+
+## Current PR
+Title: {pr_title}
+Branch: {branch_name}
+
+### PR Description
+{pr_body}
+
+{issue_section}
+
+{pr_comments_section}
+
+{reviews_section}
+
+{review_comments_section}
+
+## Instructions
+
+You are addressing reviewer feedback on this pull request. Follow these guidelines:
+
+1. **Read all feedback carefully** - Review comments, PR discussion, and line-specific comments
+2. **Address each piece of feedback** - Make the requested changes or improvements
+3. **Commit incrementally** - After each logical change, commit and push:
+   ```bash
+   git add -A
+   git commit -m "type: short description" -m "Detailed explanation of the change and which feedback it addresses"
+   git push origin {branch_name}
+   ```
+4. **Use descriptive commit messages**:
+   - Short header (50 chars max): What was changed
+   - Extended body: Why it was changed, referencing the specific feedback
+5. **Update .photon/analysis.md** - Add notes on what you changed and why
+6. **Do NOT squash commits** - Each change should be its own commit for reviewer visibility
+
+### Commit Message Format
+```
+<type>: <short description>
+
+<detailed explanation>
+Addresses feedback from @<reviewer> regarding <topic>
+```
+
+Types: fix, feat, refactor, style, docs, test, chore
+
+### Important
+- You have push access configured - use `git push origin {branch_name}` directly
+- Reviewers can see your commits in real-time as you push
+- Focus on the specific feedback provided, don't make unrelated changes
+- If feedback is unclear, make your best judgment and explain in the commit message
+
+Begin by reviewing the feedback and planning your changes."""
+
+    return prompt
+
+
+async def process_review_background(data: dict[str, Any]) -> None:
+    """
+    Background task handler for processing PR review webhooks.
+
+    Gathers context from Forgejo API, posts a status comment, then spawns
+    a Modal sandbox to run OpenCode and iterate on the PR.
+    """
+    pr_data = data.get("pull_request", {})
+    repo = data.get("repository", {})
+    review = data.get("review", {})
+
+    pr_number = pr_data.get("number", 0)
+    pr_title = pr_data.get("title", "")
+    pr_body = pr_data.get("body", "")
+    branch_name = pr_data.get("head", {}).get("ref", "")
+
+    logger.info(
+        f"Processing review webhook - "
+        f"repo: {repo.get('full_name', 'unknown')}, "
+        f"PR: #{pr_number}, "
+        f"review type: {review.get('type', 'unknown')}"
+    )
+
+    clone_url = repo.get("clone_url")
+    repo_api_url = repo.get("url")
+    if not clone_url or not repo_api_url:
+        logger.error("No clone_url or repo_api_url found in repository data")
+        return
+
+    if not branch_name:
+        logger.error("No branch name found in PR data")
+        return
+
+    # Post "working on it" comment
+    await post_pr_comment(
+        repo_api_url,
+        pr_number,
+        "**Photon** is working on the requested changes. "
+        "Watch this PR for incremental commits as updates are made.",
+    )
+
+    # Gather all context from Forgejo API
+    logger.info(f"Gathering context for PR #{pr_number}")
+    context = await _gather_review_context(repo_api_url, pr_number, pr_body, branch_name)
+
+    # Build the iteration prompt
+    prompt = _build_iteration_prompt(pr_data, context, branch_name)
+
+    logger.info(f"Spawning Modal sandbox for PR iteration on {clone_url}")
+
+    try:
+        with _sandbox_context(timeout=SANDBOX_TIMEOUT_SECONDS) as sandbox:
+            success = _run_git_workflow_iterate(
+                sandbox,
+                clone_url,
+                branch_name,
+                prompt,
+            )
+
+            if success:
+                await post_pr_comment(
+                    repo_api_url,
+                    pr_number,
+                    "**Photon** has finished addressing the review feedback. "
+                    "Please review the new commits.",
+                )
+            else:
+                await post_pr_comment(
+                    repo_api_url,
+                    pr_number,
+                    "**Photon** encountered an issue while processing the feedback. "
+                    "Please check the logs or try again.",
+                )
+    except Exception as e:
+        logger.error(f"Sandbox execution failed: {e}")
+        await post_pr_comment(
+            repo_api_url, pr_number, f"**Photon** encountered an error: {str(e)[:200]}"
+        )
+
+
+@router.post("/review-iterate")
+async def handle_review_webhook(
+    background_tasks: BackgroundTasks,
+    payload: bytes = Depends(verify_forgejo_signature),
+):
+    """
+    Handle incoming Forgejo PR review webhooks.
+
+    Triggers iteration on a PR when:
+    - Action is "reviewed"
+    - Review type is "changes_requested" or "comment" (not "approved")
+    - PR was created by Photon bot
+
+    Returns 202 Accepted and processes in background.
+    """
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from None
+
+    action = data.get("action")
+    if action != "reviewed":
+        logger.info(f"Ignoring review webhook with action: {action}")
+        return Response(status_code=200, content=b"Ignored: only 'reviewed' action supported")
+
+    # Check review type - only respond to changes_requested or comment, not approved
+    review = data.get("review", {})
+    review_type = review.get("type", "")
+    if review_type not in ("pull_request_review_rejected", "pull_request_review_comment"):
+        logger.info(f"Ignoring review with type: {review_type}")
+        return Response(
+            status_code=200,
+            content=b"Ignored: only changes_requested or comment reviews trigger iteration",
+        )
+
+    # Check if PR was created by Photon
+    pr_data = data.get("pull_request", {})
+    pr_author = pr_data.get("user", {}).get("login", "")
+    if pr_author != PHOTON_BOT_USERNAME:
+        logger.info(f"Ignoring review on PR by non-Photon author: {pr_author}")
+        return Response(status_code=200, content=b"Ignored: only Photon-created PRs are processed")
+
+    background_tasks.add_task(process_review_background, data)
+    logger.info(f"Scheduled PR #{pr_data.get('number', 'unknown')} for review iteration")
+    return Response(status_code=202, content=b"Accepted")
+
+
+# =============================================================================
+# Issue Endpoint - For creating new PRs from issues
+# =============================================================================
 
 
 @router.post("/issue")
