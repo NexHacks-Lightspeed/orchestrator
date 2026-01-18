@@ -169,7 +169,7 @@ Focus on making minimal, targeted changes that directly address the issue."""
         f"\"opencode run --print-logs --log-level DEBUG '{escaped_prompt}'\" "
         f"/tmp/opencode.log"
     )
-    p = sandbox.exec("bash", "-c", cmd, timeout=300)
+    p = sandbox.exec("bash", "-c", cmd, timeout=900)
     p.wait()
 
     log_proc = sandbox.exec("cat", "/tmp/opencode.log", timeout=10)
