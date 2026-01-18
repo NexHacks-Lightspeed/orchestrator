@@ -1,0 +1,225 @@
+#!/bin/bash
+
+# Help function
+show_help() {
+    cat << EOF
+OpenCode Lens - OpenCode with Arize Phoenix observability
+
+Usage: ./opencode-lens [--proxy-url URL] [--copilot-model MODEL] [--oauth-setup] [--help] [opencode args...]
+
+Configuration (precedence: highest to lowest):
+  1. --proxy-url URL         Override proxy URL via command line
+  2. OPENCODE_LENS_PROXY_URL   Environment variable
+  3. http://localhost:4000   Default proxy URL
+
+Options:
+  --proxy-url URL       Set the LiteLLM proxy URL (Phoenix backend)
+  --copilot-model MODEL Set GitHub Copilot model (e.g., grok-code-fast-1)
+  --oauth-setup         Trigger GitHub Copilot OAuth setup
+  --help, -h           Show this help message
+
+Phoenix Observability:
+  This script routes OpenCode requests through a LiteLLM proxy configured
+  with Arize Phoenix for observability. Traces are automatically captured
+  and can be viewed at http://localhost:6006
+
+  First time setup:
+    docker compose --profile phoenix up -d
+    ./opencode-lens
+
+Project/Environment Switching:
+  Set OPENCODE_LENS_PROJECT before starting the proxy to route traces
+  to a different project (e.g., for test isolation):
+
+    export OPENCODE_LENS_PROJECT=opencode-lens-test
+    docker compose --profile phoenix up -d
+    ./opencode-lens
+
+  WARNING: If you change OPENCODE_LENS_PROJECT, you MUST run
+  'docker compose --profile phoenix down' then 'docker compose --profile phoenix up -d' for it to take effect.
+
+Examples:
+  ./opencode-lens
+  ./opencode-lens --copilot-model grok-code-fast-1
+  ./opencode-lens --proxy-url http://remote-server:4000
+  OPENCODE_LENS_PROXY_URL=http://remote:4000 ./opencode-lens
+  ./opencode-lens --oauth-setup
+
+All other arguments are passed to OpenCode.
+EOF
+}
+
+# URL validation function
+validate_url() {
+    local url="$1"
+    if [[ ! "$url" =~ ^https?://[^[:space:]]+$ ]]; then
+        echo "❌ Invalid URL format: $url"
+        echo "   URL must start with http:// or https://"
+        return 1
+    fi
+    return 0
+}
+
+# Parse command line arguments
+PROXY_URL=""
+COPILOT_MODEL=""
+OAUTH_SETUP=false
+OPENCODE_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --proxy-url)
+            if [[ -n "$2" && "$2" != --* ]]; then
+                PROXY_URL="$2"
+                shift 2
+            else
+                echo "❌ --proxy-url requires a URL argument"
+                exit 1
+            fi
+            ;;
+        --copilot-model)
+            if [[ -n "$2" && "$2" != --* ]]; then
+                COPILOT_MODEL="$2"
+                shift 2
+            else
+                echo "❌ --copilot-model requires a model argument"
+                exit 1
+            fi
+            ;;
+        --oauth-setup)
+            OAUTH_SETUP=true
+            shift
+            ;;
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            OPENCODE_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Determine proxy URL with precedence order
+if [[ -n "$PROXY_URL" ]]; then
+    # 1. Command line flag (highest precedence)
+    FINAL_PROXY_URL="$PROXY_URL"
+    echo "🔧 Using proxy URL from command line: $FINAL_PROXY_URL"
+elif [[ -n "$OPENCODE_LENS_PROXY_URL" ]]; then
+    # 2. Environment variable
+    FINAL_PROXY_URL="$OPENCODE_LENS_PROXY_URL"
+    echo "🔧 Using proxy URL from environment variable: $FINAL_PROXY_URL"
+else
+    # 3. Default
+    FINAL_PROXY_URL="${OPENCODE_LENS_PROXY_URL:-http://localhost:4000}"
+    echo "🔧 Using default proxy URL: $FINAL_PROXY_URL"
+fi
+
+# Validate the final URL
+if ! validate_url "$FINAL_PROXY_URL"; then
+    exit 1
+fi
+
+# Check if Phoenix is running
+echo "🔍 Checking if Phoenix observability stack is running..."
+if ! docker ps --format '{{.Names}}' | grep -q "phoenix"; then
+  echo "❌ Phoenix container is not running"
+  echo "   Please start it first with: docker compose --profile phoenix up -d"
+  echo "   View Phoenix UI at: http://localhost:6006"
+  exit 1
+fi
+
+# Check if proxy is running
+echo "🔍 Checking if LiteLLM proxy is running at $FINAL_PROXY_URL..."
+if ! curl -s "$FINAL_PROXY_URL/health" >/dev/null; then
+  echo "❌ LiteLLM proxy is not running at $FINAL_PROXY_URL"
+  echo "   Please start it first with: docker compose --profile phoenix up -d"
+  exit 1
+fi
+
+echo "✅ Phoenix observability stack is running (UI: http://localhost:6006)"
+echo "✅ LiteLLM proxy is running"
+echo "🐛 Debug: Testing proxy connectivity..."
+TEST_RESPONSE=$(curl -s "$FINAL_PROXY_URL/health" | head -1)
+echo "🐛 Debug: Proxy response: $TEST_RESPONSE"
+
+# Set up GitHub Copilot environment if requested
+if [[ -n "$COPILOT_MODEL" || "$OAUTH_SETUP" == true ]]; then
+    echo "🔧 Configuring GitHub Copilot integration..."
+    
+    # GitHub Copilot specific headers for VS Code integration
+    export GITHUB_COPILOT_INTEGRATION_ID="vscode-chat"
+    export GITHUB_COPILOT_EDITOR_VERSION="vscode/1.85.1"
+    export GITHUB_COPILOT_USER_AGENT="GithubCopilot/1.155.0"
+    
+    # Set default model if specified
+    if [[ -n "$COPILOT_MODEL" ]]; then
+        export GITHUB_COPILOT_DEFAULT_MODEL="$COPILOT_MODEL"
+        echo "📋 Using GitHub Copilot model: $COPILOT_MODEL"
+    fi
+    
+    # Trigger OAuth setup if requested
+    if [[ "$OAUTH_SETUP" == true ]]; then
+        echo "🔑 GitHub Copilot OAuth setup will be triggered on first request"
+    fi
+fi
+
+echo "🚀 Starting OpenCode with proxy at $FINAL_PROXY_URL..."
+
+# OpenCode uses config file (opencode.json), not environment variables, to set provider baseURL
+# We need to ensure the config has the correct baseURL for the anthropic provider
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/opencode.json"
+
+# The baseURL needs /v1 suffix because OpenCode sends to /messages 
+# but LiteLLM proxy expects /v1/messages
+ANTHROPIC_BASE_URL="${FINAL_PROXY_URL}/v1"
+
+# Create or update the opencode.json config with the proxy baseURL
+if [[ -f "$CONFIG_FILE" ]]; then
+    # Config exists - check if it has the correct baseURL
+    CURRENT_URL=$(grep -o '"baseURL"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG_FILE" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    if [[ "$CURRENT_URL" != "$ANTHROPIC_BASE_URL" ]]; then
+        echo "🔧 Updating opencode.json baseURL to $ANTHROPIC_BASE_URL..."
+        # Use a temporary file for safe update
+        TMP_FILE=$(mktemp)
+        if command -v jq &> /dev/null; then
+            jq --arg url "$ANTHROPIC_BASE_URL" '.provider.anthropic.options.baseURL = $url' "$CONFIG_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$CONFIG_FILE"
+        else
+            # Fallback: recreate the config if jq is not available
+            cat > "$CONFIG_FILE" << EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "anthropic": {
+      "options": {
+        "baseURL": "$ANTHROPIC_BASE_URL"
+      }
+    }
+  }
+}
+EOF
+        fi
+    else
+        echo "🔧 Using existing opencode.json config (baseURL already set)"
+    fi
+else
+    echo "🔧 Creating opencode.json config with proxy baseURL..."
+    cat > "$CONFIG_FILE" << EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "anthropic": {
+      "options": {
+        "baseURL": "$ANTHROPIC_BASE_URL"
+      }
+    }
+  }
+}
+EOF
+fi
+
+echo "🐛 Debug: Config file: $CONFIG_FILE"
+echo "🐛 Debug: Args=${OPENCODE_ARGS[*]}"
+opencode "${OPENCODE_ARGS[@]}"
