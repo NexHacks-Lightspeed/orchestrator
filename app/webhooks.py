@@ -68,7 +68,8 @@ def _exec_or_fail(sandbox: modal.Sandbox, *args: str, timeout: int = 30) -> bool
 
 
 def _build_opencode_image() -> modal.Image:
-    """Build Modal image with git, node, bun, and opencode-ai installed."""
+    """Build Modal image with git, node, bun, opencode-ai, and opencode-lens installed."""
+    script_dir = "/mnt/c/Users/omana/Desktop/Projects/Nexhacks_Lightspeed/orchestrator"
     return (
         modal.Image.debian_slim()
         .apt_install("git", "curl", "ca-certificates", "sudo", "build-essential", "unzip")
@@ -79,15 +80,20 @@ def _build_opencode_image() -> modal.Image:
             {"PATH": "/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
         )
         .run_commands("bun install -g opencode-ai")
+        .add_local_file(f"{script_dir}/opencode-lens", "/usr/local/bin/opencode-lens", copy=True)
+        .run_commands("chmod +x /usr/local/bin/opencode-lens")
+        .run_commands("mkdir -p /root/.config/opencode")
+        .add_local_file(
+            f"{script_dir}/opencode-sandbox.json", "/root/.config/opencode/opencode.json", copy=True
+        )
     )
 
 
 def _get_sandbox_env() -> dict[str, str | None]:
     """Get environment variables for the sandbox."""
     return {
-        "OPENCODE_PROVIDER": settings.opencode_provider,
-        "OPENCODE_MODEL": settings.opencode_model,
         "OPENCODE_LOG_LEVEL": "info",
+        "OPENCODE_LENS_PROXY_URL": "http://<LITELLM_PROXY_URL>",
     }
 
 
@@ -111,22 +117,22 @@ def _sandbox_context(timeout: int = 600):
 
 
 def _setup_opencode(sandbox: modal.Sandbox) -> bool:
-    """Setup OpenCode authentication and configuration in the sandbox."""
-    logger.info("Setting up OpenCode authentication")
+    """Setup OpenCode and OpenCode Lens in the sandbox."""
+    logger.info("Setting up OpenCode configuration")
 
-    if settings.opencode_zen_api_key:
-        setup_cmd = f"echo {settings.opencode_zen_api_key} | opencode connect zen"
-        if not _exec_or_fail(sandbox, "bash", "-c", setup_cmd, timeout=30):
-            logger.error("OpenCode Zen authentication failed")
-            return False
-        logger.info("OpenCode Zen authentication successful")
-    else:
-        logger.warning("No OpenCode Zen API key provided, using unauthenticated mode")
+    # Verify opencode-lens is executable
+    if not _exec_or_fail(sandbox, "opencode-lens", "--help", timeout=15):
+        logger.error("OpenCode Lens verification failed")
+        return False
 
+    logger.info("OpenCode Lens is ready")
+
+    # Verify opencode is installed
     if not _exec_or_fail(sandbox, "opencode", "--version", timeout=15):
         logger.error("OpenCode verification failed")
         return False
 
+    logger.info("OpenCode configuration complete")
     return True
 
 
@@ -154,7 +160,7 @@ Focus on making minimal, targeted changes that directly address the issue."""
     escaped_prompt = prompt.replace("'", "'\\''")
     cmd = (
         f"cd /repo && script -q -c "
-        f"\"opencode run --print-logs --log-level DEBUG '{escaped_prompt}'\" "
+        f"\"opencode-lens run --print-logs --log-level DEBUG '{escaped_prompt}'\" "
         f"/tmp/opencode.log"
     )
     p = sandbox.exec("bash", "-c", cmd, timeout=300)

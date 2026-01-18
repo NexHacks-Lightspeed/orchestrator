@@ -35,20 +35,6 @@ class Settings(BaseSettings):
         description="API token for Git push operations and Forgejo API calls",
     )
 
-    # OpenCode configuration
-    opencode_zen_api_key: str = Field(
-        default="",
-        description="OpenCode Zen API key for authentication",
-    )
-    opencode_provider: str = Field(
-        default="zen",
-        description="OpenCode provider to use (zen, anthropic, openai, etc.)",
-    )
-    opencode_model: str = Field(
-        default="",
-        description="OpenCode model to use (if provider-specific)",
-    )
-
     # Server configuration
     port: int = Field(default=8000, description="Port to run the server on")
     log_level: str = Field(default="INFO", description="Logging level")

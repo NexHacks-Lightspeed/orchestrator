@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "anthropic": {
+      "options": {
+        "baseURL": "http://<LITELLM_PROXY_URL>/v1"
+      }
+    }
+  }
+}
