@@ -163,6 +163,8 @@ Focus on making minimal, targeted changes that directly address the issue."""
 
     if p.returncode != 0:
         logger.error(f"OpenCode failed with exit code {p.returncode}")
+        logger.error(f"stdout: {p.stdout.read()}")
+        logger.error(f"stderr: {p.stderr.read()}")
         return None
 
     logger.info("OpenCode completed successfully")

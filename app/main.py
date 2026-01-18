@@ -18,21 +18,24 @@ async def lifespan(app: FastAPI):
         logger.critical("FORGEJO_API_TOKEN is not configured - orchestrator cannot push to Forgejo")
         raise SystemExit(1)
 
+    if not settings.litellm_proxy_url:
+        logger.critical("LITELLM_PROXY_URL is not configured - orchestrator cannot run OpenCode")
+        raise SystemExit(1)
+
     repo_root = Path(__file__).parent.parent
     template_path = repo_root / "opencode.json.template"
     output_path = repo_root / "opencode.json"
 
-    if template_path.exists() and not output_path.exists():
-        if settings.litellm_proxy_url:
-            logger.info("Generating opencode.json from template")
-            subprocess.run(
-                [
-                    "sed",
-                    f"s|<LITELLM_PROXY_URL>|{settings.litellm_proxy_url}|g",
-                    str(template_path),
-                ],
-                stdout=open(output_path, "w"),
-            )
+    if template_path.exists():
+        logger.info("Generating opencode.json from template")
+        subprocess.run(
+            [
+                "sed",
+                f"s|<LITELLM_PROXY_URL>|{settings.litellm_proxy_url}|g",
+                str(template_path),
+            ],
+            stdout=open(output_path, "w"),
+        )
 
     yield
     logger.info("Shutting down Lightspeed Orchestrator")

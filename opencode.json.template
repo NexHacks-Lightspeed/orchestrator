@@ -3,7 +3,7 @@
   "provider": {
     "anthropic": {
       "options": {
-        "baseURL": "http://<LITELLM_PROXY_URL>/v1"
+        "baseURL": "<LITELLM_PROXY_URL>/v1"
       }
     }
   }
