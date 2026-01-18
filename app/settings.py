@@ -49,6 +49,16 @@ class Settings(BaseSettings):
         description="OpenCode model to use (if provider-specific)",
     )
 
+    # LiteLLM + Phoenix configuration
+    litellm_proxy_url: str = Field(
+        default="",
+        description="LiteLLM proxy URL for routing LLM requests",
+    )
+    enable_phoenix: bool = Field(
+        default=True,
+        description="Enable Phoenix observability",
+    )
+
     # Server configuration
     port: int = Field(default=8000, description="Port to run the server on")
     log_level: str = Field(default="INFO", description="Logging level")
