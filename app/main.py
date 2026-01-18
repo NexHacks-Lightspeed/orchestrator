@@ -19,12 +19,12 @@ async def lifespan(app: FastAPI):
         raise SystemExit(1)
 
     repo_root = Path(__file__).parent.parent
-    template_path = repo_root / "opencode-sandbox.json.template"
-    output_path = repo_root / "opencode-sandbox.json"
+    template_path = repo_root / "opencode.json.template"
+    output_path = repo_root / "opencode.json"
 
     if template_path.exists() and not output_path.exists():
         if settings.litellm_proxy_url:
-            logger.info("Generating opencode-sandbox.json from template")
+            logger.info("Generating opencode.json from template")
             subprocess.run(
                 [
                     "sed",
