@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -69,7 +70,7 @@ def _exec_or_fail(sandbox: modal.Sandbox, *args: str, timeout: int = 30) -> bool
 
 def _build_opencode_image() -> modal.Image:
     """Build Modal image with git, node, bun, opencode-ai, and opencode-lens installed."""
-    script_dir = "/mnt/c/Users/omana/Desktop/Projects/Nexhacks_Lightspeed/orchestrator"
+    repo_root = Path(__file__).parent.parent
     return (
         modal.Image.debian_slim()
         .apt_install("git", "curl", "ca-certificates", "sudo", "build-essential", "unzip")
@@ -80,11 +81,11 @@ def _build_opencode_image() -> modal.Image:
             {"PATH": "/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
         )
         .run_commands("bun install -g opencode-ai")
-        .add_local_file(f"{script_dir}/opencode-lens", "/usr/local/bin/opencode-lens", copy=True)
+        .add_local_file(f"{repo_root}/opencode-lens", "/usr/local/bin/opencode-lens", copy=True)
         .run_commands("chmod +x /usr/local/bin/opencode-lens")
         .run_commands("mkdir -p /root/.config/opencode")
         .add_local_file(
-            f"{script_dir}/opencode-sandbox.json", "/root/.config/opencode/opencode.json", copy=True
+            f"{repo_root}/opencode-sandbox.json", "/root/.config/opencode/opencode.json", copy=True
         )
     )
 
@@ -93,7 +94,7 @@ def _get_sandbox_env() -> dict[str, str | None]:
     """Get environment variables for the sandbox."""
     return {
         "OPENCODE_LOG_LEVEL": "info",
-        "OPENCODE_LENS_PROXY_URL": "http://<LITELLM_PROXY_URL>",
+        "OPENCODE_LENS_PROXY_URL": settings.litellm_proxy_url,
     }
 
 

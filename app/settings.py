@@ -35,6 +35,12 @@ class Settings(BaseSettings):
         description="API token for Git push operations and Forgejo API calls",
     )
 
+    # LiteLLM proxy URL for OpenCode Lens
+    litellm_proxy_url: str = Field(
+        default="",
+        description="URL for the LiteLLM proxy server used by OpenCode Lens",
+    )
+
     # Server configuration
     port: int = Field(default=8000, description="Port to run the server on")
     log_level: str = Field(default="INFO", description="Logging level")
