@@ -151,6 +151,7 @@ Instructions:
 1. First, analyze the issue and write your analysis and implementation plan to .photon/analysis.md
 2. Then implement the fix by editing the necessary files
 3. Do NOT delete .photon/analysis.md - it will be used for the PR description
+4. NEVER add or commit opencode.json - it is a temporary configuration file
 
 Focus on making minimal, targeted changes that directly address the issue."""
 
@@ -265,7 +266,7 @@ def _run_git_workflow(
         return
 
     logger.info("Staging changes")
-    stage_cmd = "cd repo && git add -A && git reset .photon/ 2>/dev/null || true"
+    stage_cmd = "cd repo && git add -A && git reset .photon/ opencode.json 2>/dev/null || true"
     if not _exec_or_fail(sandbox, "bash", "-c", stage_cmd, timeout=10):
         logger.error("Git staging failed, aborting workflow")
         return
