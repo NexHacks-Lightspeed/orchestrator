@@ -119,9 +119,9 @@ def _setup_opencode(sandbox: modal.Sandbox) -> bool:
     """Setup OpenCode and OpenCode Lens in the sandbox."""
     logger.info("Setting up OpenCode configuration")
 
-    # Verify opencode-lens is executable
-    if not _exec_or_fail(sandbox, "/usr/local/bin/opencode-lens", "--help", timeout=15):
-        logger.error("OpenCode Lens verification failed")
+    # Verify opencode-lens exists and is executable (don't run it yet - needs opencode.json in place)
+    if not _exec_or_fail(sandbox, "test", "-x", "/usr/local/bin/opencode-lens", timeout=15):
+        logger.error("OpenCode Lens verification failed - file not found or not executable")
         return False
 
     logger.info("OpenCode Lens is ready")
@@ -246,15 +246,15 @@ def _run_git_workflow(
         logger.error("Git branch creation failed, aborting workflow")
         return
 
-    if not _setup_opencode(sandbox):
-        logger.error("OpenCode setup failed, aborting workflow")
-        return
-
     logger.info("Copying OpenCode configuration to working directory")
     if not _exec_or_fail(
         sandbox, "bash", "-c", "cp /staging/opencode.json /repo/opencode.json", timeout=10
     ):
         logger.error("Failed to copy OpenCode configuration")
+        return
+
+    if not _setup_opencode(sandbox):
+        logger.error("OpenCode setup failed, aborting workflow")
         return
 
     analysis = _run_opencode(sandbox, issue_data)
