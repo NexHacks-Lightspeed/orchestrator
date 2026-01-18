@@ -158,19 +158,9 @@ Focus on making minimal, targeted changes that directly address the issue."""
     logger.info(f"Running OpenCode for issue #{issue_number}")
 
     escaped_prompt = prompt.replace("'", "'\\''")
-    cmd = (
-        f"cd /repo && script -q -c "
-        f"\"opencode-lens run --print-logs --log-level DEBUG '{escaped_prompt}'\" "
-        f"/tmp/opencode.log"
-    )
+    cmd = f"cd /repo && opencode-lens run --print-logs --log-level DEBUG '{escaped_prompt}'"
     p = sandbox.exec("bash", "-c", cmd, timeout=300)
     p.wait()
-
-    log_proc = sandbox.exec("cat", "/tmp/opencode.log", timeout=10)
-    log_proc.wait()
-    log_output = log_proc.stdout.read()
-    if log_output:
-        logger.info(f"[OpenCode output] {log_output[:5000]}")
 
     if p.returncode != 0:
         logger.error(f"OpenCode failed with exit code {p.returncode}")
